@@ -1,0 +1,12 @@
+lfquiztg_high = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=ga110db35fedb7f_lfquiztg_high.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+lfquiztg_medium = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=ga110db35fedb7f_lfquiztg_medium.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+lfquiztg_low = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=ga110db35fedb7f_lfquiztg_low.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+lfquiztg_tp = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=ga110db35fedb7f_lfquiztg_tp.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+lfquiztg_tpurgent = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=ga110db35fedb7f_lfquiztg_tpurgent.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+
+

@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "he": "^1.2.0",
+    "node-fetch": "^3.3.2",
+    "node-telegram-bot-api": "^0.67.0",
+    "nodemon": "^3.1.14",
+    "oracledb": "^6.10.0"
+  },
+  "name": "tg-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
