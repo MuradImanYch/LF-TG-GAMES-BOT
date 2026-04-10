@@ -2,16 +2,29 @@ const TelegramBot = require('node-telegram-bot-api');
 const he = require('he');
 require('dotenv').config();
 const db = require('./db');
+const translate = require('translate-google');
 
-(async () => {
+const translateText = async (text) => {
   try {
-    const result = await db.execute(`SELECT 1 AS TEST FROM DUAL`);
-    console.log(result.rows);
+    const res = await translate(text, { from: 'en', to: 'ru' });
+    return res;
   } catch (e) {
-    console.error(e);
+    console.error('Translate error:', e);
+    return text;
   }
-})();
+};
 
+/* const getPlayers = async () => {
+  const res = await fetch('https://api.football-data.org/v4/persons/44', {
+    headers: {
+      'X-Auth-Token': process.env.FOOTBALL_DATA_API_KEY
+    }
+  });
+
+  const data = await res.json();
+};
+
+getPlayers(); */
 
 const token = process.env.TG_BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
@@ -30,7 +43,7 @@ const shuffleArray = (arr) => {
 };
 
 const getQuiz = async () => {
-  const res = await fetch('https://opentdb.com/api.php?amount=1&type=multiple&category=15');
+  const res = await fetch('https://opentdb.com/api.php?amount=1&type=multiple&category=21');
 
   if (!res.ok) {
     throw new Error(`HTTP error: ${res.status}`);
@@ -48,8 +61,8 @@ const getQuiz = async () => {
 const buildMainMenuKeyboard = () => {
   return {
     inline_keyboard: [
-      [{ text: '🎮 Choose game', callback_data: 'choose_game_menu' }],
-      [{ text: '🏆 User ranking', callback_data: 'user_ranking' }]
+      [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+      [{ text: '🥇🥈🥉 Рейтинг игроков', callback_data: 'user_ranking' }]
     ]
   };
 };
@@ -57,8 +70,8 @@ const buildMainMenuKeyboard = () => {
 const buildGamesMenuKeyboard = () => {
   return {
     inline_keyboard: [
-      [{ text: '🎮 Game 1', callback_data: 'game1' }],
-      [{ text: '⬅️ Back to main menu', callback_data: 'main_menu' }]
+      [{ text: '🤾🏈 Спортивная викторина', callback_data: 'sport_quiz' }],
+      [{ text: '⬅️ Назад в главное меню', callback_data: 'main_menu' }]
     ]
   };
 };
@@ -66,9 +79,17 @@ const buildGamesMenuKeyboard = () => {
 const buildRankingKeyboard = () => {
   return {
     inline_keyboard: [
-      [{ text: '🏆 Top players', callback_data: 'top_players' }],
-      [{ text: '🔎 Find yourself', callback_data: 'find_yourself' }],
-      [{ text: '⬅️ Back to main menu', callback_data: 'main_menu' }]
+      [{ text: '🔎 Найти себя', callback_data: 'find_yourself' }],
+      [{ text: '⬅️ Назад в главное меню', callback_data: 'main_menu' }]
+    ]
+  };
+};
+
+const buildFindYourselfKeyboard = () => {
+  return {
+    inline_keyboard: [
+      [{ text: '🥇🥈🥉 Рейтинг игроков', callback_data: 'user_ranking' }],
+      [{ text: '⬅️ Назад в главное меню', callback_data: 'main_menu' }]
     ]
   };
 };
@@ -82,14 +103,14 @@ const buildQuestionKeyboard = (answers) => {
           callback_data: `answer_${index}`
         }
       ]),
-      [{ text: '🎮 Choose game', callback_data: 'choose_game_menu' }],
-      [{ text: '🏠 Main menu', callback_data: 'main_menu' }]
+      [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+      [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
     ]
   };
 };
 
 const renderMainMenu = async (chatId, messageId = null) => {
-  const text = 'HI 👋\nChoose an option:';
+  const text = 'LF Games приветствует вас 👋';
 
   if (messageId) {
     await bot.editMessageText(text, {
@@ -105,38 +126,148 @@ const renderMainMenu = async (chatId, messageId = null) => {
 };
 
 const renderGamesMenu = async (chatId, messageId) => {
-  await bot.editMessageText('🎮 Choose a game:', {
+  await bot.editMessageText('🎲 Выберите игру:', {
     chat_id: chatId,
     message_id: messageId,
     reply_markup: buildGamesMenuKeyboard()
   });
 };
 
-const renderRankingMenu = async (chatId, messageId) => {
-  await bot.editMessageText('🏆 User ranking\n\nChoose an option:', {
-    chat_id: chatId,
-    message_id: messageId,
-    reply_markup: buildRankingKeyboard()
+const formatRankingTable = (rows) => {
+  if (!rows.length) {
+    return [
+      '──────────────────────────────',
+      '      Рейтинг пока пуст       ',
+      '──────────────────────────────'
+    ].join('\n');
+  }
+
+  const topRows = rows;
+
+  const lines = topRows.map((user, index) => {
+    const place =
+      index === 0 ? '🥇' :
+      index === 1 ? '🥈' :
+      index === 2 ? '🥉' : `${index + 1}.`;
+
+    const username = String(user.USERNAME || 'Без username').slice(0, 12);
+    const score = String(user.SCORE ?? 0).padStart(3, ' ');
+    const stats = `${user.CORRECT_ANSWERS ?? 0}/${user.TOTAL_QUESTIONS ?? 0}`.padStart(5, ' ');
+
+    return ` ${place.padEnd(3, ' ')} ${username.padEnd(12, ' ')} │ ${score} │ ${stats} `;
   });
+
+  return [
+    '────────────────────────────────',
+    ' #   Игрок         │ Счт │ ✓/Из ',
+    '────────────────────────────────',
+    ...lines,
+    '────────────────────────────────'
+  ].join('\n');
+};
+
+const renderRankingMenu = async (chatId, messageId) => {
+  const result = await db.execute(
+    `SELECT CHAT_ID, USERNAME, SCORE, CORRECT_ANSWERS, TOTAL_QUESTIONS
+     FROM TBL_USERS
+     ORDER BY SCORE DESC, CORRECT_ANSWERS DESC, TOTAL_QUESTIONS ASC`
+  );
+
+  const rankingTable = formatRankingTable(result.rows);
+
+  await bot.editMessageText(
+    `🥇🥈🥉 Рейтинг всех игроков\n\n<code>${rankingTable}</code>`,
+    {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: buildRankingKeyboard()
+    }
+  );
+};
+
+const renderFindYourself = async (chatId, messageId) => {
+  const result = await db.execute(
+    `SELECT CHAT_ID, USERNAME, SCORE, CORRECT_ANSWERS, TOTAL_QUESTIONS
+     FROM TBL_USERS
+     ORDER BY SCORE DESC, CORRECT_ANSWERS DESC, TOTAL_QUESTIONS ASC`
+  );
+
+  const rows = result.rows;
+  const myIndex = rows.findIndex((user) => Number(user.CHAT_ID) === Number(chatId));
+
+  if (myIndex === -1) {
+    await bot.editMessageText(
+      '🔎 Вы пока не найдены в рейтинге.\nСыграйте хотя бы один раз.',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: buildFindYourselfKeyboard()
+      }
+    );
+    return;
+  }
+
+  const lines = rows.map((user, index) => {
+    const place =
+      index === 0 ? '🥇' :
+      index === 1 ? '🥈' :
+      index === 2 ? '🥉' : `${index + 1}.`;
+
+    const username = String(user.USERNAME || 'Без username').slice(0, 12);
+    const score = String(user.SCORE ?? 0).padStart(3, ' ');
+    const stats = `${user.CORRECT_ANSWERS ?? 0}/${user.TOTAL_QUESTIONS ?? 0}`.padStart(5, ' ');
+
+    const isMe = Number(user.CHAT_ID) === Number(chatId);
+
+    return ` ${place.padEnd(3, ' ')} ${username.padEnd(12, ' ')} │ ${score} │ ${stats} `;
+  });
+
+  const table = [
+    '────────────────────────────────',
+    ' #   Игрок         │ Счт │ ✓/Из ',
+    '────────────────────────────────',
+    ...lines,
+    '────────────────────────────────'
+  ].join('\n');
+
+  await bot.editMessageText(
+    `🔎 Ваш рейтинг\n\n<code>${table}</code>`,
+    {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: buildFindYourselfKeyboard()
+    }
+  );
 };
 
 const loadAndRenderQuestion = async (chatId, messageId) => {
   const quiz = await getQuiz();
 
   const decodedQuestion = he.decode(quiz.question);
-  const correctAnswer = he.decode(quiz.correct_answer);
-  const incorrectAnswers = quiz.incorrect_answers.map((item) => he.decode(item));
+  const translatedQuestion = await translateText(decodedQuestion);
+
+  const decodedCorrectAnswer = he.decode(quiz.correct_answer);
+  const correctAnswer = await translateText(decodedCorrectAnswer);
+
+  const incorrectAnswers = await Promise.all(
+    quiz.incorrect_answers.map(async (item) => {
+      const decoded = he.decode(item);
+      return await translateText(decoded);
+    })
+  );
 
   const answers = shuffleArray([correctAnswer, ...incorrectAnswers]);
   const correctIndex = answers.findIndex((item) => item === correctAnswer);
 
   sessions.set(chatId, {
-    question: decodedQuestion,
+    question: translatedQuestion,
     answers,
     correctIndex
   });
 
-  await bot.editMessageText(`❓ ${decodedQuestion}`, {
+  await bot.editMessageText(`❓ ${translatedQuestion}`, {
     chat_id: chatId,
     message_id: messageId,
     reply_markup: buildQuestionKeyboard(answers)
@@ -147,8 +278,6 @@ bot.onText(/\/start/, async (msg) => {
   try {
     const chatId = msg.chat.id;
     const username = msg.from.username || null;
-
-    console.log('START:', { chatId, username });
 
     const result = await db.execute(
       `SELECT 1 FROM TBL_USERS WHERE CHAT_ID = :chatId`,
@@ -161,10 +290,6 @@ bot.onText(/\/start/, async (msg) => {
          VALUES (:chatId, :username)`,
         { chatId, username }
       );
-
-      console.log('User created');
-    } else {
-      console.log('User already exists');
     }
 
     sessions.delete(chatId);
@@ -198,30 +323,13 @@ bot.on('callback_query', async (query) => {
         await renderRankingMenu(chatId, messageId);
         break;
 
-      case 'top_players':
-        await bot.editMessageText(
-          '🏆 Top players\n\n1. PlayerOne — 120 pts\n2. Murad — 95 pts\n3. QuizMaster — 80 pts',
-          {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: buildRankingKeyboard()
-          }
-        );
-        break;
-
       case 'find_yourself':
-        await bot.editMessageText(
-          '🔎 Find yourself\n\nYour current rank: #2\nYour score: 95 pts',
-          {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: buildRankingKeyboard()
-          }
-        );
+        sessions.delete(chatId);
+        await renderFindYourself(chatId, messageId);
         break;
 
-      case 'game1':
-        await bot.editMessageText('Loading quiz...', {
+      case 'sport_quiz':
+        await bot.editMessageText('Загрузка вопросов...', {
           chat_id: chatId,
           message_id: messageId
         });
@@ -229,7 +337,7 @@ bot.on('callback_query', async (query) => {
         break;
 
       case 'next_question':
-        await bot.editMessageText('Loading next question...', {
+        await bot.editMessageText('Загрузка следующего вопроса...', {
           chat_id: chatId,
           message_id: messageId
         });
@@ -241,12 +349,12 @@ bot.on('callback_query', async (query) => {
           const session = sessions.get(chatId);
 
           if (!session) {
-            await bot.editMessageText('Session expired. Please start again.', {
+            await bot.editMessageText('Сессия истекла. Пожалуйста, начните заново.', {
               chat_id: chatId,
               message_id: messageId,
               reply_markup: {
                 inline_keyboard: [
-                  [{ text: '🏠 Main menu', callback_data: 'main_menu' }]
+                  [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
                 ]
               }
             });
@@ -255,6 +363,26 @@ bot.on('callback_query', async (query) => {
 
           const selectedIndex = Number(data.split('_')[1]);
           const isCorrect = selectedIndex === session.correctIndex;
+
+          if (isCorrect) {
+            await db.execute(
+              `UPDATE TBL_USERS
+               SET
+                 SCORE = SCORE + 1,
+                 CORRECT_ANSWERS = CORRECT_ANSWERS + 1,
+                 TOTAL_QUESTIONS = TOTAL_QUESTIONS + 1
+               WHERE CHAT_ID = :chatId`,
+              { chatId }
+            );
+          } else {
+            await db.execute(
+              `UPDATE TBL_USERS
+               SET
+                 TOTAL_QUESTIONS = TOTAL_QUESTIONS + 1
+               WHERE CHAT_ID = :chatId`,
+              { chatId }
+            );
+          }
 
           const answeredButtons = session.answers.map((answer, index) => {
             let prefix = '▫️';
@@ -274,16 +402,16 @@ bot.on('callback_query', async (query) => {
           });
 
           await bot.editMessageText(
-            `${isCorrect ? '✅ Correct!' : '❌ Wrong!'}\n\n❓ ${session.question}`,
+            `${isCorrect ? '✅ Верно!' : '❌ Неверно!'}\n\n❓ ${session.question}`,
             {
               chat_id: chatId,
               message_id: messageId,
               reply_markup: {
                 inline_keyboard: [
                   ...answeredButtons,
-                  [{ text: '➡️ Next question', callback_data: 'next_question' }],
-                  [{ text: '🎮 Choose game', callback_data: 'choose_game_menu' }],
-                  [{ text: '🏠 Main menu', callback_data: 'main_menu' }]
+                  [{ text: '➡️ Следующий вопрос', callback_data: 'next_question' }],
+                  [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+                  [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
                 ]
               }
             }
@@ -295,22 +423,22 @@ bot.on('callback_query', async (query) => {
     console.error('Bot error:', error);
 
     try {
-      await bot.editMessageText('Failed to fetch quiz data. Please try again later.', {
+      await bot.editMessageText('Не удалось загрузить данные викторины. Пожалуйста, попробуйте позже.', {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🎮 Choose game', callback_data: 'choose_game_menu' }],
-            [{ text: '🏠 Main menu', callback_data: 'main_menu' }]
+            [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+            [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
           ]
         }
       });
     } catch {
-      await bot.sendMessage(chatId, 'Failed to fetch quiz data. Please try again later.', {
+      await bot.sendMessage(chatId, 'Не удалось загрузить данные викторины. Пожалуйста, попробуйте позже.', {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🎮 Choose game', callback_data: 'choose_game_menu' }],
-            [{ text: '🏠 Main menu', callback_data: 'main_menu' }]
+            [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+            [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
           ]
         }
       });

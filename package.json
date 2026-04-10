@@ -5,7 +5,8 @@
     "node-fetch": "^3.3.2",
     "node-telegram-bot-api": "^0.67.0",
     "nodemon": "^3.1.14",
-    "oracledb": "^6.10.0"
+    "oracledb": "^6.10.0",
+    "translate-google": "^1.5.0"
   },
   "name": "tg-bot",
   "version": "1.0.0",

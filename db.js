@@ -18,9 +18,7 @@ const dbConfig = {
 
 async function getConnection() {
   try {
-    console.log('DB: connecting...');
     const connection = await oracledb.getConnection(dbConfig);
-    console.log('DB: connected');
     return connection;
   } catch (error) {
     console.error('DB CONNECTION ERROR:', error);
@@ -32,15 +30,9 @@ async function execute(sql, binds = {}, options = {}) {
   let connection;
 
   try {
-    console.log('DB: execute start');
-    console.log('SQL:', sql);
-    console.log('BINDS:', binds);
-
     connection = await getConnection();
 
     const result = await connection.execute(sql, binds, options);
-
-    console.log('DB: execute success');
     return result;
   } catch (error) {
     console.error('DB EXECUTE ERROR:', error);
@@ -49,7 +41,6 @@ async function execute(sql, binds = {}, options = {}) {
     if (connection) {
       try {
         await connection.close();
-        console.log('DB: connection closed');
       } catch (closeError) {
         console.error('DB CLOSE ERROR:', closeError);
       }
