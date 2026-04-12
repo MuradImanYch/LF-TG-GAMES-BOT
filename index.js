@@ -12,13 +12,29 @@ const openai = new OpenAI({
 
 const MODEL = process.env.OPENAI_MODEL;
 const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
+
 const ENABLE_QUESTION_IMAGES = String(process.env.ENABLE_QUESTION_IMAGES).toLowerCase() === 'true';
 
-if (!MODEL) {
-  throw new Error('OPENAI_MODEL is required in .env');
+/*
+WRITE_QUESTIONS_TO_DB=true  -> всё, что генерит OpenAI, пишется в таблицу игры
+READ_QUESTIONS_FROM_DB=true -> бот пытается брать вопросы из БД
+если READ=true и таблица пустая -> fallback на OpenAI
+*/
+const WRITE_QUESTIONS_TO_DB = String(process.env.WRITE_QUESTIONS_TO_DB).toLowerCase() === 'true';
+const READ_QUESTIONS_FROM_DB = String(process.env.READ_QUESTIONS_FROM_DB).toLowerCase() === 'true';
+
+if (!MODEL && !READ_QUESTIONS_FROM_DB) {
+  throw new Error('OPENAI_MODEL is required in .env when READ_QUESTIONS_FROM_DB=false');
 }
 
 const sessions = new Map();
+
+/*
+  Хранит уже использованные вопросы в памяти:
+  key: `${chatId}:${gameType}`
+  value: Set(questionKey)
+*/
+const usedQuestionsByChatGame = new Map();
 
 const GAME_TYPES = {
   FOOTBALL_QUIZ: 'football_quiz',
@@ -27,12 +43,47 @@ const GAME_TYPES = {
   GUESS_STADIUM_BY_CLUB: 'guess_stadium_by_club'
 };
 
+const QUESTION_TABLES = {
+  [GAME_TYPES.FOOTBALL_QUIZ]: 'TBL_Q_FOOTBALL_QUIZ',
+  [GAME_TYPES.GUESS_CLUB]: 'TBL_Q_GUESS_CLUB',
+  [GAME_TYPES.GUESS_NATIONAL_TEAM]: 'TBL_Q_GUESS_NATIONAL_TEAM',
+  [GAME_TYPES.GUESS_STADIUM_BY_CLUB]: 'TBL_Q_GUESS_STADIUM_BY_CLUB'
+};
+
 const clearChatSessions = (chatId) => {
   for (const [messageId, session] of sessions.entries()) {
     if (session.chatId === chatId) {
       sessions.delete(messageId);
     }
   }
+};
+
+const getUsedKey = (chatId, gameType) => `${chatId}:${gameType}`;
+
+const normalizeQuestionKey = (question) =>
+  String(question || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const getUsedQuestionsSet = (chatId, gameType) => {
+  const key = getUsedKey(chatId, gameType);
+
+  if (!usedQuestionsByChatGame.has(key)) {
+    usedQuestionsByChatGame.set(key, new Set());
+  }
+
+  return usedQuestionsByChatGame.get(key);
+};
+
+const markQuestionAsUsed = (chatId, gameType, question) => {
+  const usedSet = getUsedQuestionsSet(chatId, gameType);
+  usedSet.add(normalizeQuestionKey(question));
+};
+
+const hasQuestionBeenUsed = (chatId, gameType, question) => {
+  const usedSet = getUsedQuestionsSet(chatId, gameType);
+  return usedSet.has(normalizeQuestionKey(question));
 };
 
 const pickDifficulty = () => {
@@ -243,19 +294,62 @@ const getGameLabel = (gameType) => {
 const getGameInstruction = (gameType) => {
   switch (gameType) {
     case GAME_TYPES.FOOTBALL_QUIZ:
-      return 'Сгенерируй 1 вопрос футбольной викторины. Вопрос должен быть только о футболе.';
+      return [
+        'Сгенерируй 1 вопрос футбольной викторины.',
+        'Не зацикливайся на шаблонах "в каком году" и "кто выиграл".',
+        'Используй разнообразные типы вопросов.',
+        'Чередуй категории:',
+        '- игроки',
+        '- клубы',
+        '- сборные',
+        '- стадионы',
+        '- позиции игроков',
+        '- номера',
+        '- тренеры',
+        '- лиги и турниры',
+        '- рекорды',
+        '- трансферы',
+        '- капитаны',
+        '- дерби',
+        '- домашние стадионы',
+        '- страны игроков',
+        '- футбольные прозвища и факты',
+        'Вопросы должны быть реально разнообразными.'
+      ].join(' ');
     case GAME_TYPES.GUESS_CLUB:
-      return 'Сгенерируй 1 вопрос игры "Угадай клуб футболиста". Вопрос должен быть только о текущем клубе футболиста.';
+      return [
+        'Сгенерируй 1 вопрос игры "Угадай клуб футболиста".',
+        'Вопрос должен быть только о текущем клубе футболиста.',
+        'Используй игроков из разных лиг и стран, а не только самых медийных.',
+        'Можно брать известные и среднеизвестные клубы, если факт надёжный и актуальный.'
+      ].join(' ');
     case GAME_TYPES.GUESS_NATIONAL_TEAM:
-      return 'Сгенерируй 1 вопрос игры "Угадай сборную футболиста". Вопрос должен быть только о текущей национальной сборной футболиста.';
+      return [
+        'Сгенерируй 1 вопрос игры "Угадай сборную футболиста".',
+        'Вопрос должен быть только о текущей национальной сборной футболиста.',
+        'Используй игроков из разных лиг и стран, а не только самых медийных.',
+        'Можно брать известные и среднеизвестные сборные, если факт надёжный и актуальный.'
+      ].join(' ');
     case GAME_TYPES.GUESS_STADIUM_BY_CLUB:
-      return 'Сгенерируй 1 вопрос игры "Угадай стадион по ФК". Вопрос должен быть только о домашнем стадионе футбольного клуба.';
+      return [
+        'Сгенерируй 1 вопрос игры "Угадай стадион по ФК".',
+        'Вопрос должен быть только о домашнем стадионе футбольного клуба.',
+        'Используй клубы из разных лиг и стран, а не только топ-5 лиг.',
+        'Можно брать известные и среднеизвестные клубы, если факт надёжный и актуальный.'
+      ].join(' ');
     default:
       throw new Error('Unknown game type');
   }
 };
 
-const getPrompt = (gameType, difficulty) => {
+const getPrompt = (gameType, difficulty, excludedQuestions = []) => {
+  const excludedBlock = excludedQuestions.length
+    ? [
+        'Не используй и не повторяй следующие уже заданные вопросы:',
+        ...excludedQuestions.map((q, i) => `${i + 1}. ${q}`)
+      ].join('\n')
+    : 'Старайся не повторять недавно заданные вопросы.';
+
   return [
     'Ты создаёшь вопросы только про футбол на русском языке.',
     getGameInstruction(gameType),
@@ -263,7 +357,8 @@ const getPrompt = (gameType, difficulty) => {
     'Сложность уже выбрана приложением. Строго следуй ей.',
     'Вопрос должен быть однозначным, современным и без спорных трактовок.',
     'Если вопрос про клуб, сборную или стадион, используй только известные и актуальные данные.',
-    'Задавай вопросы из разных лиг, старайся более разнообразные вопросы задавать.',
+    'Делай вопросы разнообразными по лигам, странам, турнирам и темам.',
+    excludedBlock,
     'Верни строго JSON без markdown и без текста вне JSON.',
     'Формат JSON:',
     '{',
@@ -280,7 +375,7 @@ const getPrompt = (gameType, difficulty) => {
     '- correctIndex от 0 до 3',
     '- ответы короткие',
     '- explanation короткое, на русском',
-    '- imagePrompt должен быть коротким и понятным промптом для генерации изображения для данного вопроса, логически связанного с вопросом а не какая то абстрактная красивая картинка, если это личность то сгененрируй её или его портрет, если это клуб то сгенерируй его логотип, если сборная то её флаг, если стадион то его вид, не используй в imagePrompt текст который нужно вывести на изображении',
+    '- imagePrompt должен быть коротким и понятным промптом для генерации изображения по вопросу',
     '- не используй одинаковые варианты ответа',
     '- все варианты должны относиться к футболу',
     '- imagePrompt не должен содержать текст для вывода на изображении'
@@ -311,9 +406,117 @@ const parseQuestionPayload = (content) => {
   };
 };
 
-const generateQuestionFromOpenAI = async (gameType) => {
+const mapDbRowToPayload = (row) => {
+  return {
+    question: row.QUESTION_TEXT,
+    answers: [row.ANSWER_1, row.ANSWER_2, row.ANSWER_3, row.ANSWER_4],
+    correctIndex: Number(row.CORRECT_INDEX),
+    explanation: row.EXPLANATION || '',
+    imagePrompt: row.IMAGE_PROMPT || '',
+    difficulty: row.DIFFICULTY || 'средняя'
+  };
+};
+
+const getRecentExcludedQuestions = (chatId, gameType, limit = 15) => {
+  const usedSet = getUsedQuestionsSet(chatId, gameType);
+  return Array.from(usedSet).slice(-limit);
+};
+
+const fetchRandomQuestionFromDb = async (gameType, chatId) => {
+  const tableName = QUESTION_TABLES[gameType];
+
+  const result = await db.execute(
+    `SELECT
+       ID,
+       QUESTION_TEXT,
+       ANSWER_1,
+       ANSWER_2,
+       ANSWER_3,
+       ANSWER_4,
+       CORRECT_INDEX,
+       EXPLANATION,
+       IMAGE_PROMPT,
+       DIFFICULTY,
+       SOURCE_TYPE,
+       CREATED_AT
+     FROM ${tableName}
+     WHERE IS_ACTIVE = 1
+     ORDER BY DBMS_RANDOM.VALUE`
+  );
+
+  if (!result.rows.length) {
+    return null;
+  }
+
+  const freshRow = result.rows.find(
+    (row) => !hasQuestionBeenUsed(chatId, gameType, row.QUESTION_TEXT)
+  );
+
+  if (freshRow) {
+    return mapDbRowToPayload(freshRow);
+  }
+
+  const fallbackRow = result.rows[0];
+  return mapDbRowToPayload(fallbackRow);
+};
+
+const saveQuestionToDb = async (gameType, payload) => {
+  const tableName = QUESTION_TABLES[gameType];
+
+  const exists = await db.execute(
+    `SELECT 1
+     FROM ${tableName}
+     WHERE QUESTION_TEXT = :questionText`,
+    { questionText: payload.question }
+  );
+
+  if (exists.rows.length > 0) {
+    return;
+  }
+
+  await db.execute(
+    `INSERT INTO ${tableName} (
+       QUESTION_TEXT,
+       ANSWER_1,
+       ANSWER_2,
+       ANSWER_3,
+       ANSWER_4,
+       CORRECT_INDEX,
+       EXPLANATION,
+       IMAGE_PROMPT,
+       DIFFICULTY,
+       SOURCE_TYPE
+     ) VALUES (
+       :questionText,
+       :answer1,
+       :answer2,
+       :answer3,
+       :answer4,
+       :correctIndex,
+       :explanation,
+       :imagePrompt,
+       :difficulty,
+       :sourceType
+     )`,
+    {
+      questionText: payload.question,
+      answer1: payload.answers[0],
+      answer2: payload.answers[1],
+      answer3: payload.answers[2],
+      answer4: payload.answers[3],
+      correctIndex: payload.correctIndex,
+      explanation: payload.explanation,
+      imagePrompt: payload.imagePrompt,
+      difficulty: payload.difficulty,
+      sourceType: 'openai'
+    }
+  );
+};
+
+const generateQuestionFromOpenAI = async (gameType, chatId) => {
   const difficulty = pickDifficulty();
-  const prompt = getPrompt(gameType, difficulty);
+  const excludedQuestions = getRecentExcludedQuestions(chatId, gameType, 15);
+  const prompt = getPrompt(gameType, difficulty, excludedQuestions);
 
   const response = await openai.chat.completions.create({
     model: MODEL,
@@ -366,6 +569,40 @@ const generateQuestionFromOpenAI = async (gameType) => {
   return { ...payload, difficulty };
 };
 
+const generateUniqueOpenAIQuestion = async (gameType, chatId, attempts = 7) => {
+  for (let i = 0; i < attempts; i++) {
+    const payload = await generateQuestionFromOpenAI(gameType, chatId);
+
+    if (!hasQuestionBeenUsed(chatId, gameType, payload.question)) {
+      return payload;
+    }
+  }
+
+  throw new Error('Не удалось сгенерировать уникальный вопрос');
+};
+
+const getQuestionPayload = async (gameType, chatId) => {
+  if (READ_QUESTIONS_FROM_DB) {
+    const dbPayload = await fetchRandomQuestionFromDb(gameType, chatId);
+
+    if (dbPayload && !hasQuestionBeenUsed(chatId, gameType, dbPayload.question)) {
+      return dbPayload;
+    }
+
+    if (dbPayload && hasQuestionBeenUsed(chatId, gameType, dbPayload.question) && !MODEL) {
+      return dbPayload;
+    }
+  }
+
+  const payload = await generateUniqueOpenAIQuestion(gameType, chatId);
+
+  if (WRITE_QUESTIONS_TO_DB) {
+    await saveQuestionToDb(gameType, payload);
+  }
+
+  return payload;
+};
+
 const generateQuestionImageBuffer = async (imagePrompt, gameType) => {
   if (!ENABLE_QUESTION_IMAGES) {
     return null;
@@ -373,8 +610,8 @@ const generateQuestionImageBuffer = async (imagePrompt, gameType) => {
 
   const finalPrompt = [
     `Футбольная игровая иллюстрация для режима "${getGameLabel(gameType)}".`,
-    'Без текста, без логотипов, без водяных знаков, без коллажей из букв.',
-    'Чистая, понятная, яркая сцена, которая помогает визуально понять вопрос.',
+    'Без текста, без логотипов, без водяных знаков.',
+    'Чистая, понятная, яркая сцена, логически связанная с вопросом.',
     imagePrompt
   ].join(' ');
 
@@ -394,15 +631,23 @@ const generateQuestionImageBuffer = async (imagePrompt, gameType) => {
 };
 
 const sendQuestion = async (chatId, gameType) => {
-  const payload = await generateQuestionFromOpenAI(gameType);
+  const payload = await getQuestionPayload(gameType, chatId);
+
+  markQuestionAsUsed(chatId, gameType, payload.question);
 
   if (ENABLE_QUESTION_IMAGES) {
     try {
-      const imageBuffer = await generateQuestionImageBuffer(payload.imagePrompt || payload.question, gameType);
+      const imageBuffer = await generateQuestionImageBuffer(
+        payload.imagePrompt || payload.question,
+        gameType
+      );
 
       if (imageBuffer) {
         await bot.sendPhoto(chatId, imageBuffer, {
-          caption: `${getGameLabel(gameType)}\n📊 Сложность: ${payload.difficulty}\n🖼 Визуальная подсказка`
+          caption:
+            `${getGameLabel(gameType)}\n` +
+            // `📊 Сложность: ${payload.difficulty}\n` +
+            `🖼 Визуальная подсказка`
         });
       }
     } catch (imageError) {
@@ -413,7 +658,7 @@ const sendQuestion = async (chatId, gameType) => {
   const sentMessage = await bot.sendMessage(
     chatId,
     `${getGameLabel(gameType)}\n` +
-    `📊 Сложность: ${payload.difficulty}\n\n` +
+    // `📊 Сложность: ${payload.difficulty}\n\n` +
     `❓ ${payload.question}`,
     {
       reply_markup: buildQuestionKeyboard(payload.answers)
@@ -578,7 +823,7 @@ bot.on('callback_query', async (query) => {
       `${isCorrect ? '✅ Верно!' : '❌ Неверно!'}`,
       '',
       `🎮 Режим: ${getGameLabel(session.gameType)}`,
-      `📊 Сложность: ${session.difficulty}`,
+      // `📊 Сложность: ${session.difficulty}`,
       `❓ Вопрос: ${session.question}`,
       `🟦 Ваш ответ: ${selectedAnswer}`,
       `🟩 Правильный ответ: ${correctAnswer}`,
