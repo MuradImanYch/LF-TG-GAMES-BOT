@@ -22,6 +22,7 @@ READ_QUESTIONS_FROM_DB=true -> бот пытается брать вопросы
 */
 const WRITE_QUESTIONS_TO_DB = String(process.env.WRITE_QUESTIONS_TO_DB).toLowerCase() === 'true';
 const READ_QUESTIONS_FROM_DB = String(process.env.READ_QUESTIONS_FROM_DB).toLowerCase() === 'true';
+const ALLOW_AI_FALLBACK = String(process.env.ALLOW_AI_FALLBACK).toLowerCase() === 'true';
 
 if (!MODEL && !READ_QUESTIONS_FROM_DB) {
   throw new Error('OPENAI_MODEL is required in .env when READ_QUESTIONS_FROM_DB=false');
@@ -38,6 +39,7 @@ const usedQuestionsByChatGame = new Map();
 
 const GAME_TYPES = {
   FOOTBALL_QUIZ: 'football_quiz',
+  FOOTBALL_QUIZ_WC: 'football_quiz_wc',
   GUESS_CLUB: 'guess_club',
   GUESS_NATIONAL_TEAM: 'guess_national_team',
   GUESS_STADIUM_BY_CLUB: 'guess_stadium_by_club'
@@ -45,6 +47,7 @@ const GAME_TYPES = {
 
 const QUESTION_TABLES = {
   [GAME_TYPES.FOOTBALL_QUIZ]: 'TBL_Q_FOOTBALL_QUIZ',
+  [GAME_TYPES.FOOTBALL_QUIZ_WC]: 'TBL_Q_FOOTBALL_QUIZ_WC',
   [GAME_TYPES.GUESS_CLUB]: 'TBL_Q_GUESS_CLUB',
   [GAME_TYPES.GUESS_NATIONAL_TEAM]: 'TBL_Q_GUESS_NATIONAL_TEAM',
   [GAME_TYPES.GUESS_STADIUM_BY_CLUB]: 'TBL_Q_GUESS_STADIUM_BY_CLUB'
@@ -107,6 +110,7 @@ const buildGamesMenuKeyboard = () => {
   return {
     inline_keyboard: [
       [{ text: '⚽ Футбольная викторина', callback_data: GAME_TYPES.FOOTBALL_QUIZ }],
+      [{ text: '🗺️ Футбольная викторина - Чемпионат мира', callback_data: GAME_TYPES.FOOTBALL_QUIZ_WC }],
       [{ text: '🏟 Угадай клуб футболиста', callback_data: GAME_TYPES.GUESS_CLUB }],
       [{ text: '🌍 Угадай сборную футболиста', callback_data: GAME_TYPES.GUESS_NATIONAL_TEAM }],
       [{ text: '🏟️ Угадай стадион по ФК', callback_data: GAME_TYPES.GUESS_STADIUM_BY_CLUB }],
@@ -280,6 +284,8 @@ const getGameLabel = (gameType) => {
   switch (gameType) {
     case GAME_TYPES.FOOTBALL_QUIZ:
       return '⚽ Футбольная викторина';
+    case GAME_TYPES.FOOTBALL_QUIZ_WC:
+      return '⚽ Футбольная викторина - Чемпионат мира';
     case GAME_TYPES.GUESS_CLUB:
       return '🏟 Угадай клуб футболиста';
     case GAME_TYPES.GUESS_NATIONAL_TEAM:
@@ -316,6 +322,27 @@ const getGameInstruction = (gameType) => {
         '- футбольные прозвища и факты',
         'Вопросы должны быть реально разнообразными.'
       ].join(' ');
+    case GAME_TYPES.FOOTBALL_QUIZ_WC:
+    return [
+      'Сгенерируй 1 вопрос футбольной викторины только про чемпионаты мира по футболу.',
+      'Вопросы должны относиться только к турниру FIFA World Cup.',
+      'Не используй клубный футбол, лиги, трансферы, дерби и несвязанные турниры.',
+      'Используй разнообразные типы вопросов.',
+      'Чередуй категории:',
+      '- победители турниров',
+      '- финалы',
+      '- участники финалов',
+      '- бомбардиры турниров',
+      '- лучшие игроки турниров',
+      '- страны-хозяйки',
+      '- рекорды чемпионатов мира',
+      '- игроки и сборные на чемпионатах мира',
+      '- тренеры чемпионов мира',
+      '- стадионы матчей чемпионатов мира',
+      '- статистика матчей чемпионатов мира',
+      '- известные события и факты чемпионатов мира',
+      'Не зацикливайся на вопросах только про год или только про победителя.'
+    ].join(' ');
     case GAME_TYPES.GUESS_CLUB:
       return [
         'Сгенерируй 1 вопрос игры "Угадай клуб футболиста".',
@@ -413,6 +440,7 @@ const mapDbRowToPayload = (row) => {
     correctIndex: Number(row.CORRECT_INDEX),
     explanation: row.EXPLANATION || '',
     imagePrompt: row.IMAGE_PROMPT || '',
+    imageUrl: row.IMG_URL || '',
     difficulty: row.DIFFICULTY || 'средняя'
   };
 };
@@ -427,25 +455,29 @@ const fetchRandomQuestionFromDb = async (gameType, chatId) => {
 
   const result = await db.execute(
     `SELECT
-       ID,
-       QUESTION_TEXT,
-       ANSWER_1,
-       ANSWER_2,
-       ANSWER_3,
-       ANSWER_4,
-       CORRECT_INDEX,
-       EXPLANATION,
-       IMAGE_PROMPT,
-       DIFFICULTY,
-       SOURCE_TYPE,
-       CREATED_AT
-     FROM ${tableName}
-     WHERE IS_ACTIVE = 1
-     ORDER BY DBMS_RANDOM.VALUE`
+      ID,
+      QUESTION_TEXT,
+      ANSWER_1,
+      ANSWER_2,
+      ANSWER_3,
+      ANSWER_4,
+      CORRECT_INDEX,
+      EXPLANATION,
+      IMAGE_PROMPT,
+      IMG_URL,
+      DIFFICULTY,
+      SOURCE_TYPE,
+      CREATED_AT
+    FROM ${tableName}
+    WHERE IS_ACTIVE = 1
+    ORDER BY DBMS_RANDOM.VALUE`
   );
 
   if (!result.rows.length) {
-    return null;
+    return {
+      status: 'empty',
+      payload: null
+    };
   }
 
   const freshRow = result.rows.find(
@@ -453,11 +485,16 @@ const fetchRandomQuestionFromDb = async (gameType, chatId) => {
   );
 
   if (freshRow) {
-    return mapDbRowToPayload(freshRow);
+    return {
+      status: 'fresh',
+      payload: mapDbRowToPayload(freshRow)
+    };
   }
 
-  const fallbackRow = result.rows[0];
-  return mapDbRowToPayload(fallbackRow);
+  return {
+    status: 'repeat',
+    payload: mapDbRowToPayload(result.rows[0])
+  };
 };
 
 const saveQuestionToDb = async (gameType, payload) => {
@@ -583,17 +620,41 @@ const generateUniqueOpenAIQuestion = async (gameType, chatId, attempts = 7) => {
 
 const getQuestionPayload = async (gameType, chatId) => {
   if (READ_QUESTIONS_FROM_DB) {
-    const dbPayload = await fetchRandomQuestionFromDb(gameType, chatId);
+    const dbResult = await fetchRandomQuestionFromDb(gameType, chatId);
 
-    if (dbPayload && !hasQuestionBeenUsed(chatId, gameType, dbPayload.question)) {
-      return dbPayload;
+    if (dbResult.status === 'fresh' && dbResult.payload) {
+      return dbResult.payload;
     }
 
-    if (dbPayload && hasQuestionBeenUsed(chatId, gameType, dbPayload.question) && !MODEL) {
-      return dbPayload;
+    // Таблица не пуста, но все вопросы уже были
+    if (dbResult.status === 'repeat' && dbResult.payload) {
+      if (!ALLOW_AI_FALLBACK) {
+        return dbResult.payload; // крутим по кругу старые вопросы
+      }
     }
+
+    // Таблица пустая
+    if (dbResult.status === 'empty') {
+      if (!ALLOW_AI_FALLBACK) {
+        return null;
+      }
+    }
+
+    // Если разрешен fallback в AI
+    if (ALLOW_AI_FALLBACK) {
+      const payload = await generateUniqueOpenAIQuestion(gameType, chatId);
+
+      if (WRITE_QUESTIONS_TO_DB) {
+        await saveQuestionToDb(gameType, payload);
+      }
+
+      return payload;
+    }
+
+    return null;
   }
 
+  // Если вообще не читаем из БД, работаем как раньше
   const payload = await generateUniqueOpenAIQuestion(gameType, chatId);
 
   if (WRITE_QUESTIONS_TO_DB) {
@@ -633,32 +694,57 @@ const generateQuestionImageBuffer = async (imagePrompt, gameType) => {
 const sendQuestion = async (chatId, gameType) => {
   const payload = await getQuestionPayload(gameType, chatId);
 
-  markQuestionAsUsed(chatId, gameType, payload.question);
-
-  if (ENABLE_QUESTION_IMAGES) {
-    try {
-      const imageBuffer = await generateQuestionImageBuffer(
-        payload.imagePrompt || payload.question,
-        gameType
-      );
-
-      if (imageBuffer) {
-        await bot.sendPhoto(chatId, imageBuffer, {
-          caption:
-            `${getGameLabel(gameType)}\n` +
-            // `📊 Сложность: ${payload.difficulty}\n` +
-            `🖼 Визуальная подсказка`
-        });
+  if (!payload) {
+    await bot.sendMessage(
+      chatId,
+      `${getGameLabel(gameType)}\n\n❌ В базе пока нет доступных вопросов для этой игры.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎲 Выбрать игру', callback_data: 'choose_game_menu' }],
+            [{ text: '🏠 Главное меню', callback_data: 'main_menu' }]
+          ]
+        }
       }
-    } catch (imageError) {
-      console.error('Image generation error:', imageError);
-    }
+    );
+    return;
   }
 
+  markQuestionAsUsed(chatId, gameType, payload.question);
+
+  // 👉 СНАЧАЛА пробуем отправить картинку
+  try {
+  // ✅ 1. Если есть IMG_URL в БД — ВСЕГДА отправляем
+  if (payload.imageUrl) {
+    await bot.sendPhoto(chatId, payload.imageUrl, {
+      /* caption:
+        `${getGameLabel(gameType)}\n` */
+    });
+  }
+
+  // ✅ 2. Если нет IMG_URL — тогда уже используем AI (если включено)
+  else if (ENABLE_QUESTION_IMAGES) {
+    const imageBuffer = await generateQuestionImageBuffer(
+      payload.imagePrompt || payload.question,
+      gameType
+    );
+
+    if (imageBuffer) {
+      await bot.sendPhoto(chatId, imageBuffer, {
+        caption:
+          `${getGameLabel(gameType)}\n`
+      });
+    }
+  }
+} catch (imageError) {
+  console.error('Image sending/generation error:', imageError);
+}
+
+  // 👉 потом отправляем вопрос
   const sentMessage = await bot.sendMessage(
     chatId,
     `${getGameLabel(gameType)}\n` +
-    // `📊 Сложность: ${payload.difficulty}\n\n` +
+    `📊 Сложность: ${payload.difficulty}\n\n` +
     `❓ ${payload.question}`,
     {
       reply_markup: buildQuestionKeyboard(payload.answers)
@@ -673,7 +759,8 @@ const sendQuestion = async (chatId, gameType) => {
     correctIndex: payload.correctIndex,
     explanation: payload.explanation,
     difficulty: payload.difficulty,
-    imagePrompt: payload.imagePrompt
+    imagePrompt: payload.imagePrompt,
+    imageUrl: payload.imageUrl || ''
   });
 };
 
@@ -762,6 +849,7 @@ bot.on('callback_query', async (query) => {
 
     if (
       data === GAME_TYPES.FOOTBALL_QUIZ ||
+      data === GAME_TYPES.FOOTBALL_QUIZ_WC ||
       data === GAME_TYPES.GUESS_CLUB ||
       data === GAME_TYPES.GUESS_NATIONAL_TEAM ||
       data === GAME_TYPES.GUESS_STADIUM_BY_CLUB
@@ -776,6 +864,7 @@ bot.on('callback_query', async (query) => {
 
       if (
         gameType !== GAME_TYPES.FOOTBALL_QUIZ &&
+        gameType !== GAME_TYPES.FOOTBALL_QUIZ_WC &&
         gameType !== GAME_TYPES.GUESS_CLUB &&
         gameType !== GAME_TYPES.GUESS_NATIONAL_TEAM &&
         gameType !== GAME_TYPES.GUESS_STADIUM_BY_CLUB
@@ -823,7 +912,7 @@ bot.on('callback_query', async (query) => {
       `${isCorrect ? '✅ Верно!' : '❌ Неверно!'}`,
       '',
       `🎮 Режим: ${getGameLabel(session.gameType)}`,
-      // `📊 Сложность: ${session.difficulty}`,
+      `📊 Сложность: ${session.difficulty}`,
       `❓ Вопрос: ${session.question}`,
       `🟦 Ваш ответ: ${selectedAnswer}`,
       `🟩 Правильный ответ: ${correctAnswer}`,
