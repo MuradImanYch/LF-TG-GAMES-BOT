@@ -437,7 +437,7 @@ const mapDbRowToPayload = (row) => {
   return {
     question: row.QUESTION_TEXT,
     answers: [row.ANSWER_1, row.ANSWER_2, row.ANSWER_3, row.ANSWER_4],
-    correctIndex: Number(row.CORRECT_INDEX),
+    correctIndex: Number(row.CORRECT_INDEX) - 1,
     explanation: row.EXPLANATION || '',
     imagePrompt: row.IMAGE_PROMPT || '',
     imageUrl: row.IMG_URL || '',
